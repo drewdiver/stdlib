@@ -1,0 +1,220 @@
+#!/bin/echo Warning: this library should be sourced!
+#===============================================================================
+#
+#          FILE: stdlib
+#
+#         USAGE: source stdlib
+#
+#   DESCRIPTION: An opinionated shell library for macOS
+#
+#  REQUIREMENTS: For jamf options, a jamf enrolled device will be required
+#        AUTHOR: Drew Diver
+#       CREATED: 04/16/20 10:24
+#      REVISION:  ---
+#===============================================================================
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+#===============================================================================
+# SANITY CHECK
+#===============================================================================
+
+if [[ "$(uname -s)" -ne "Darwin" ]]
+then
+	echo "Warning: This library is targeted towards macOS..."
+fi
+
+#===============================================================================
+# GLOBAL DECLARATIONS
+#===============================================================================
+
+JAMF="/usr/local/bin/jamf"
+JAMF_HELPER="/Library/Application Support/JAMF/bin/jamfHelper.app/Contents/MacOS/jamfHelper"
+BRANDING_ICON="/path/to/image.file"
+
+#===============================================================================
+# FUNCTIONS
+#===============================================================================
+
+# Get the active macOS user
+console_user ()
+{
+	echo $(scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /loginwindow/ { print $3 }')
+}
+
+# Get the UID of the active macOS user
+console_user_uid ()
+{
+	echo $(id -u "$(console_user)")
+}
+
+# Get the full network user
+network_user ()
+{
+	echo $(dscl . read "/Users/$(console_user)" | awk -F": " '/NetworkUser/ { print $2 }')
+}
+
+# Check if user logged in
+user_logged_in ()
+{
+	pgrep -q Finder && return 0 || return 1
+}
+
+# Run proceeding command as the current console user
+run_as_user ()
+{
+	if [ $(console_user) != "loginwindow" ]; then
+		launchctl asuser "$console_user_uid" sudo -u "$(console_user)" "$@"
+	else
+		echo "No user logged in"
+	fi
+}
+
+# Check if we can ping a specified host
+is_alive ()
+{
+	local HOST=$1
+
+	/sbin/ping -c 3 $HOST >/dev/null 2>&1
+	if [ $? -eq 0 ]
+	then
+		return 0
+	else
+		return 1
+	fi
+}
+
+# Check if we have a Kerberos ticket
+kstatus ()
+{
+	klist &>/dev/null && return 0 || return 1
+}
+
+# Caffeinate and set CPID to the process ID which we can later kill
+caffeine ()
+{
+	/usr/bin/caffeinate -disu &
+	CPID="$!"
+}
+
+# Check if a command is available
+in_path ()
+{
+	CMD="$1"
+	command -v "$CMD" &> /dev/null && return 0 || return 1
+}
+
+# Check if file exists
+file_exists ()
+{
+	FILE="$1"
+	[[ -f "$FILE" ]] && return 0 || return 1
+}
+
+# Check if directory exists
+dir_exists ()
+{
+	DIR="$1"
+	[[ -d "$DIR" ]] && return 0 || return 1
+}
+
+# Check if a share is mounted
+share_mounted ()
+{
+	SHARE="$1"
+	mount | grep -qw "$SHARE" && return 0 || return 1
+}
+
+# Run a Jamf policy trigger
+run_policy ()
+{
+	POLICY=$1
+
+	# Ensure the jamf binary exists on client
+	if [[ ! -x "$JAMF" ]]
+	then
+		echo "Could not find the jamf binary at $JAMF"
+		exit 1
+	fi
+
+	"$JAMF" policy -event "$POLICY"
+}
+
+# Run a jamfHelper dialog
+jamf_helper ()
+{
+	# Ensure the jamfHelper exists on client
+	if [[ ! -x "$JAMF_HELPER" ]]
+	then
+		echo "Could not find jamfhelper at $JAMF_HELPER"
+		exit 1
+	fi
+
+	TITLE="$1"
+	DESC="$2"
+
+	"$JAMF_HELPER" -title "$TITLE" \
+				-description "$DESC" \
+				-windowType hud \
+				-icon "$BRANDING_ICON" \
+				-iconSize 100 \
+				-button1 "OK" \
+				-defaultButton 1
+}
+
+#===============================================================================
+# AppleScript dialogs, these do not require PPPC's as they use 'display'
+#===============================================================================
+
+display_dialog ()
+{
+	message=${1:-"Message"}
+	user=$(console_user)
+	if [[ $user != "" ]]
+	then
+		uid=$(id -u "$user")
+		launchctl asuser $uid /usr/bin/osascript <<-EndOfScript
+			button returned of ¬
+				(display dialog "$message" ¬
+				buttons {"OK"} ¬
+				default button "OK")
+		EndOfScript
+	fi
+}
+
+display_notification ()
+{
+	# $1: message $2: title
+	message=${1:-"Message"}
+	title=${2:-"Script Notification"}
+	user=$(console_user)
+	if [[ $user != "" ]]
+	then
+		uid=$(id -u "$user")
+		launchctl asuser $uid /usr/bin/osascript <<-EndOfScript
+			display notification "$message" with title "$title"
+		EndOfScript
+	fi
+}
+
+display_text_input ()
+{
+	# $1: message $2: default text
+	message=${1:-"Message"}
+	defaultvalue=${2:-"default value"}
+	user=$(console_user)
+	if [[ $user != "" ]]
+	then
+		uid=$(id -u "$user")
+
+		launchctl asuser $uid /usr/bin/osascript <<-EndOfScript
+			text returned of ¬
+				(display dialog "$message" ¬
+					default answer "$defaultvalue" ¬
+					buttons {"OK"} ¬
+					default button "OK")
+			EndOfScript
+	else
+		exit 1
+	fi
+}
